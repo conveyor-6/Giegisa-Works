@@ -131,6 +131,8 @@ class DraggableListWidget(ResponsiveListWidget):
 class ChatInputBox(QTextEdit):
     returnPressed = pyqtSignal()
     image_pasted = pyqtSignal()   # 粘贴了图片时通知主界面更新提示
+    historyUp = pyqtSignal()      # 光标在首行时按 ↑：翻阅更早的输入历史
+    historyDown = pyqtSignal()    # 光标在末行时按 ↓：翻阅更近的输入历史
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -186,7 +188,6 @@ class ChatInputBox(QTextEdit):
             qimage.save(buf, "PNG")
             buf.close()
             self.pending_image_b64 = base64.b64encode(bytes(ba)).decode("ascii")
-            self.pending_image_mime = "image/png"
             self.image_pasted.emit()
         except Exception:
             self.pending_image_b64 = None
@@ -197,6 +198,12 @@ class ChatInputBox(QTextEdit):
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
             self.returnPressed.emit()
+        elif event.key() == Qt.Key.Key_Up and self.textCursor().blockNumber() == 0:
+            # 仅在首行按 ↑ 才翻阅历史，不打断多行草稿内的光标移动
+            self.historyUp.emit()
+        elif event.key() == Qt.Key.Key_Down and self.textCursor().blockNumber() == self.document().blockCount() - 1:
+            # 仅在末行按 ↓ 才翻阅历史
+            self.historyDown.emit()
         else:
             super().keyPressEvent(event)
 
@@ -275,3 +282,77 @@ class InputDialog(QDialog):
         
     def get_text(self):
         return self.input.text().strip()
+
+class ChatBubbleWindow(QWidget):
+    """独立的文字气泡子窗口。
+
+    历史问题：气泡曾是桌宠窗口内部的顶部控件，文字增长会改变桌宠
+    窗口尺寸，即使锚定回拉也会在 Windows 上分两帧绘制，图像出现
+    肉眼可见的抖动。拆成独立子窗口后，桌宠本体窗口尺寸彻底恒定
+    （只含图像/输入框），从架构上不可能再被气泡推动；气泡由桌宠
+    定位到图像正上方，文字增长时气泡窗口自己向上扩展。
+    """
+
+    def __init__(self, pet):
+        super().__init__(pet)
+        self.pet = pet
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.Tool
+                            | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        # 不用 QLayout::SetFixedSize——它会在每次布局时把窗口 min/max
+        # 强制重置为 sizeHint，使“超高时给气泡设高度上限”无法实现。
+        # 尺寸统一由 setText 后的 adjustSize() 驱动（adjustSize 遵守
+        # 窗口 maximumHeight 上限）。
+        self.label = QLabel("")
+        self.label.setWordWrap(True)
+        self.label.setTextFormat(Qt.TextFormat.RichText)
+        self.label.setMinimumHeight(30)
+        self.label.setSizePolicy(QSizePolicy.Policy.MinimumExpanding,
+                                 QSizePolicy.Policy.MinimumExpanding)
+        self.label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay.addWidget(self.label)
+
+    # ---- 兼容原 QLabel 调用面（oc.py 各处以 self.chat_bubble.xxx 调用） ----
+    def setText(self, text):
+        self.label.setText(text)
+        # 没有 SetFixedSize 约束，内容变化后需显式自适应尺寸。
+        self.adjustSize()
+
+    def text(self):
+        return self.label.text()
+
+    def setFixedWidth(self, width):
+        # 窗口与内部标签同时定宽：未显示时窗口宽度也恒定。
+        super().setFixedWidth(width)
+        self.label.setFixedWidth(width)
+
+    def setStyleSheet(self, qss):
+        self.label.setStyleSheet(qss)
+
+    # ---- 事件转发：点击/拖动/右键气泡，等效于操作桌宠本体 ----
+    def mousePressEvent(self, event):
+        self.pet.mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.pet.mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.pet.mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        self.pet.contextMenuEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 显示前立即就位，避免在旧坐标闪一帧
+        self.pet._sync_bubble_position()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 文字增长后让桌宠重新定位（保持底边贴在图像顶，向上扩展）。
+        # 推迟到同一轮事件循环执行，与缩放同一帧生效。
+        self.pet._schedule_bubble_sync()

@@ -80,13 +80,45 @@ def main():
             assert abs(a[0] - b[0]) <= 2, (a, b)
             assert abs(a[1] - b[1]) <= 2, (a, b)
 
-        # ---- 2. 夹持：贴屏幕顶部时，超高气泡也不顶出屏幕 ----
-        pet.move(500, 0)
-        pet.chat_bubble.setText("顶部长文本，" * 60)
+        # ---- 1b. 延迟锚定：resize 不同步移动窗口，锚点在事件循环中统一生效 ----
+        pet.chat_bubble.hide()
         pet.adjustSize()
         app.processEvents()
+        pet.move(500, 300)
+        app.processEvents()
+        base = _image_anchor(pet)
+        y_before = pet.y()
+        pet.chat_bubble.setText("延迟锚定测试，" * 10)
+        pet.chat_bubble.show()
+        pet.adjustSize()
+        assert pet.y() == y_before, "resizeEvent 里不应再同步移动窗口（跳帧根因）"
+        app.processEvents()
+        now = _image_anchor(pet)
+        assert abs(base[0] - now[0]) <= 2 and abs(base[1] - now[1]) <= 2, (base, now)
+        # 隐藏→再增长循环后锚点依旧稳定
+        pet.chat_bubble.hide()
+        pet.adjustSize()
+        app.processEvents()
+        pet.chat_bubble.setText("第二轮增长，" * 14)
+        pet.chat_bubble.show()
+        pet.adjustSize()
+        app.processEvents()
+        now2 = _image_anchor(pet)
+        assert abs(base[0] - now2[0]) <= 2 and abs(base[1] - now2[1]) <= 2, (base, now2)
+
+        # ---- 2. 上方空间不足时：气泡按可用空间截顶，不顶出屏幕 ----
+        pet.move(500, 200)
+        app.processEvents()
+        pet.chat_bubble.setText("顶部长文本，" * 60)
+        pet.chat_bubble.show()
+        pet.chat_bubble.adjustSize()
+        app.processEvents()
         avail = app.primaryScreen().availableGeometry()
-        assert pet.y() >= avail.top(), (pet.y(), avail.top())
+        space = (pet.y() - 6) - avail.top()
+        assert pet.chat_bubble.height() <= space + 2, \
+            (pet.chat_bubble.height(), space)
+        assert pet.chat_bubble.y() >= avail.top() - 2, \
+            (pet.chat_bubble.y(), avail.top())
 
         # ---- 2b. 桌宠停在屏幕底边（底部超出屏幕）时不得被夹持上拉 ----
         pet.chat_bubble.hide()
@@ -152,6 +184,52 @@ def main():
         pet.type_timer.stop()
         pet.is_typing = False
         pet._bubble_queue.clear()
+        pet.chat_bubble.hide()
+
+        # ---- 6. 独立气泡子窗口的行为契约 ----
+        from PyQt6.QtCore import QPoint, QPointF, Qt as _Qt
+        from PyQt6.QtGui import QMouseEvent as _QME
+
+        def _ev(etype, local, button, buttons):
+            local = QPointF(local)
+            return _QME(etype, local, QPointF(1000, 1000) + local,
+                        button, buttons, _Qt.KeyboardModifier.NoModifier)
+
+        pet.chat_bubble.setText("跟随测试")
+        pet.chat_bubble.show()
+        app.processEvents()
+        # 6.1 气泡贴在图像正上方：水平中心对齐、底边贴近本体顶边
+        assert abs(pet.chat_bubble.x() + pet.chat_bubble.width() // 2
+                   - (pet.x() + pet.width() // 2)) <= 2
+        assert abs(pet.chat_bubble.y() + pet.chat_bubble.height()
+                   - (pet.y() - 6)) <= 2
+        # 6.2 拖动本体（经气泡转发），气泡实时跟随
+        pre_pos = pet.pos()
+        pet.chat_bubble.mousePressEvent(_ev(_QME.Type.MouseButtonPress,
+                                            QPoint(10, 10), _Qt.MouseButton.LeftButton,
+                                            _Qt.MouseButton.LeftButton))
+        pet.chat_bubble.mouseMoveEvent(_ev(_QME.Type.MouseMove,
+                                           QPoint(60, 70), _Qt.MouseButton.NoButton,
+                                           _Qt.MouseButton.LeftButton))
+        app.processEvents()
+        assert pet.pos() == pre_pos + QPoint(50, 60), (pre_pos, pet.pos())
+        assert abs(pet.chat_bubble.x() + pet.chat_bubble.width() // 2
+                   - (pet.x() + pet.width() // 2)) <= 2, "气泡未跟随本体"
+        pet.chat_bubble.mouseReleaseEvent(_ev(_QME.Type.MouseButtonRelease,
+                                              QPoint(60, 70), _Qt.MouseButton.LeftButton,
+                                              _Qt.MouseButton.NoButton))
+        assert not pet.is_following
+        # 6.3 气泡上的左键松开等效点击本体：可见气泡被收起
+        assert not pet.chat_bubble.isVisible(), "点击气泡未触发本体的收起逻辑"
+        # 6.4 本体隐藏时气泡跟随隐藏
+        pet.chat_bubble.setText("再显示")
+        pet.chat_bubble.show()
+        app.processEvents()
+        pet.hide()
+        app.processEvents()
+        assert not pet.chat_bubble.isVisible(), "本体隐藏后气泡仍可见"
+        pet.show()
+        app.processEvents()
         pet.chat_bubble.hide()
 
         pet.close()

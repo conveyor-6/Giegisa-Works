@@ -23,8 +23,9 @@ def _log(*args):
 class ChatThread(QThread):
     reply_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
-    api_lag_occurred = pyqtSignal(float) 
+    api_lag_occurred = pyqtSignal(float)
     summary_updated = pyqtSignal(str)   # 后台提炼完长期记忆后，通知主线程刷新界面
+    send_failed = pyqtSignal(str)       # 发送失败，参数为未能发出的用户消息原文
 
     def __init__(self, config):
         super().__init__()
@@ -155,6 +156,7 @@ class ChatThread(QThread):
                 self._run_openai()
         except Exception as e:
             self.error_occurred.emit(f"【normal】接口异常：{str(e)}。")
+            self.send_failed.emit(self.current_msg)
 
     def _record_and_emit(self, reply):
         """把这一轮对话写进历史并把回复发给界面（历史里只存文字，不存庞大的图片编码）"""
@@ -274,6 +276,7 @@ class ChatThread(QThread):
             self._record_and_emit(reply_text)
         except Exception as e:
             self.reply_ready.emit(f"【normal】Gemini 连线失败：{str(e)}。")
+            self.send_failed.emit(self.current_msg)
 
     def _run_openai(self):
         sys_prompt = self._compose_system_prompt()
