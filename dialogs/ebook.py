@@ -501,14 +501,14 @@ class EbookReaderDialog(QDialog):
         reading = QVBoxLayout()
         reading.setSpacing(2)
         header = QHBoxLayout()
-        shelf_btn = QToolButton()
-        shelf_btn.setText("☰")
-        shelf_btn.setToolTip("返回书架")
-        shelf_btn.clicked.connect(self.back_to_shelf)
+        self.shelf_btn = QToolButton()
+        self.shelf_btn.setText("☰")
+        self.shelf_btn.setToolTip("返回书架")
+        self.shelf_btn.clicked.connect(self.back_to_shelf)
         self.header_info = QLabel("")
         self.header_info.setStyleSheet("color:#6c8193;font-size:11px;font-weight:bold;")
         self.header_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.addWidget(shelf_btn)
+        header.addWidget(self.shelf_btn)
         header.addWidget(self.header_info, stretch=1)
         reading.addLayout(header)
 
@@ -539,18 +539,18 @@ class EbookReaderDialog(QDialog):
         reading.addWidget(self.reading_surface, stretch=1)
 
         nav = QHBoxLayout()
-        prev_btn = QToolButton()
-        prev_btn.setText("◀")
-        prev_btn.clicked.connect(self.prev_page)
+        self.prev_btn = QToolButton()
+        self.prev_btn.setText("◀")
+        self.prev_btn.clicked.connect(self.prev_page)
         self.chapter_label = QLabel("")
         self.chapter_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.chapter_label.setStyleSheet("font-weight:bold;color:#647b8f;")
-        next_btn = QToolButton()
-        next_btn.setText("▶")
-        next_btn.clicked.connect(self.next_page)
-        nav.addWidget(prev_btn)
+        self.next_btn = QToolButton()
+        self.next_btn.setText("▶")
+        self.next_btn.clicked.connect(self.next_page)
+        nav.addWidget(self.prev_btn)
         nav.addWidget(self.chapter_label, stretch=1)
-        nav.addWidget(next_btn)
+        nav.addWidget(self.next_btn)
         reading.addLayout(nav)
 
         self.progress = QProgressBar()
@@ -570,6 +570,15 @@ class EbookReaderDialog(QDialog):
         self._make_marks_panel()
         self._make_auto_panel()
         self._make_other_panel()
+        self._sync_tool_button_colors()
+
+    def _sync_tool_button_colors(self):
+        """左侧工具列及翻页按钮的图标颜色：日间固定为黑色，不随操作系统
+        明暗主题变化；夜间模式由阅读器主题样式表统一接管（置空回退）。"""
+        night = bool(self.settings.get("night_mode", False))
+        qss = "" if night else "color:#1a1a1a;"
+        for button in self.tool_buttons + [self.shelf_btn, self.prev_btn, self.next_btn]:
+            button.setStyleSheet(qss)
 
     def _panel_scroll(self):
         content = QWidget()
@@ -876,7 +885,10 @@ class EbookReaderDialog(QDialog):
             QApplication.restoreOverrideCursor()
         if not self.parsed:
             return
-        self.book["title"] = self.parsed["title"] or self.book.get("title")
+        # 已有书名一律保留：导入到书库的托管副本文件名恒为 book.<ext>，
+        # 按文件名推导标题的格式（如 TXT）会把解析标题变成“book”，
+        # 绝不允许它覆盖书架上的原书名；仅在原书名为空时用解析标题补。
+        self.book["title"] = self.book.get("title") or self.parsed["title"]
         self.book["size"] = self.parsed["size"]
         self.book["total_chars"] = self.parsed["total_chars"]
         self.book["chapter_count"] = len(self.parsed["chapters"])
@@ -991,12 +1003,17 @@ class EbookReaderDialog(QDialog):
         if not self.pages or not self.parsed:
             return
         start, end, chapter = self.pages[self.current_page]
-        self.current_chapter = chapter
         self.text.clear()
         self.text.setPlainText(self.full_text[start:end])
         self._insert_inline_images(start, end)
         self._apply_visual_format()
         self._apply_annotations(start, end)
+        self._update_page_chrome()
+
+    def _update_page_chrome(self):
+        """页眉信息、章节名、进度条与阅读位置保存（两种模式共用）。"""
+        start, end, chapter = self.pages[self.current_page]
+        self.current_chapter = chapter
         self.toc_list.setCurrentRow(chapter)
         chapter_title = self.parsed["chapters"][chapter]["title"]
         percent = (end / max(1, len(self.full_text))) * 100
@@ -1293,6 +1310,7 @@ class EbookReaderDialog(QDialog):
             self.night_status.setText(
                 "当前：夜间配置（本模式内的修改会单独保存）"
                 if night else "当前：日间配置（本模式内的修改会单独保存）")
+        self._sync_tool_button_colors()
 
     def prev_page(self):
         if self.current_page > 0:

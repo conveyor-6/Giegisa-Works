@@ -22,14 +22,15 @@ from threads import ChatThread, TriviaThread, IdleChatThread, RandomEventThread,
 
 # ============================================================
 #  非模态弹窗封装
-#  旧方案使用 exec() 模态弹窗 + WindowStaysOnTopHint，在 Windows 上
-#  有两个顽疾：(1) 模态会冻结父面板，用户无法拖动/点击（“窗口阻滞”）；
+#  旧方案使用 exec() 模态弹窗，在 Windows 上有两个顽疾：
+#  (1) 模态冻结父面板，用户无法拖动/点击（“窗口阻滞”）；
 #  (2) 与置顶 Tool 父窗口的 z-order 竞争，弹窗有概率被压到父面板
-#  下方，造成整个应用无法点击。
-#  以下弹窗全部改为：父窗口的子窗口（Qt 保证子窗口恒在父窗口上方，
-#  不需要 StayOnTop）+ 非模态 show()（父面板保持可拖动可交互），
-#  结果通过回调返回。回调内的异常被捕获并打印，避免 PyQt6 对未处理
-#  异常直接 qFatal 导致整个桌宠闪退。
+#      下方，造成整个应用无法点击。
+#  以下弹窗全部改为：父窗口的子窗口 + WindowStaysOnTopHint 置顶
+#  （实测仅靠父子关系仍偶发被压，置顶保证新窗口恒在最上层）+
+#  非模态 show()（父面板保持可拖动可交互，即使层级异常也不会
+#  出现“点不动”的死锁），结果通过回调返回。回调内的异常被捕获
+#  并打印，避免 PyQt6 对未处理异常直接 qFatal 导致桌宠闪退。
 # ============================================================
 
 def _safe_callback(func, *args):
@@ -43,10 +44,19 @@ def _safe_callback(func, *args):
 
 
 def _show_popup(dlg):
-    """以非模态方式弹出子窗口：随父窗口置顶、不被遮挡、不冻结父面板。"""
+    """以非模态方式弹出子窗口。
+
+    置顶（StayOnTop）+ 父窗口子窗口双保险：实测中仅靠父子关系，
+    Windows 上仍偶发新弹窗被压在大面板下方；非模态设计保证即便
+    层级异常也不会卡死，置顶则保证每个新窗口都显示在最上层。
+    注意 QMessageBox 在 show() 时会重置窗口标志，置顶必须在显示
+    之后设置（设置后窗口会短暂隐藏，需再次 show）。
+    """
     dlg.setModal(False)
     dlg.setWindowModality(Qt.WindowModality.NonModal)
     dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    dlg.show()
+    dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
     dlg.show()
     dlg.raise_()
     dlg.activateWindow()

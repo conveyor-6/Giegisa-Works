@@ -31,13 +31,12 @@ def _click_ok(dialog):
 
 
 def assert_popup_contract(dialog, parent):
-    """所有非模态弹窗的统一契约：不冻结父窗口、恒在父窗口上方。"""
+    """所有非模态弹窗的统一契约：不冻结父窗口、置顶显示在最上层。"""
     assert dialog.parent() is parent
     assert not dialog.isModal()
     assert dialog.windowModality() == Qt.WindowModality.NonModal
-    # 不依赖 WindowStaysOnTopHint：作为子窗口天然位于父窗口之上，
-    # 不与桌宠本体的置顶标志互相竞争（此前“小窗口被压在大面板下”的根因）。
-    assert not (dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+    # 子窗口 + 置顶双保险：实测仅靠父子关系仍偶发被大面板压住
+    assert dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert parent.isEnabled()
     assert QApplication.activeModalWidget() is None
 

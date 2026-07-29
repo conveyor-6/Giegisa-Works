@@ -1,8 +1,9 @@
 import os
 import re
+import base64
 from PyQt6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QDialog, QListWidget, QPushButton, QTextEdit, QSizePolicy)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QSize
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QSize, QByteArray, QBuffer, QIODevice
+from PyQt6.QtGui import QPixmap, QImage
 
 class ImageBubble(QWidget):
     def __init__(self, parent_pet):
