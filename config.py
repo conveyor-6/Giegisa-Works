@@ -33,6 +33,10 @@ DEFAULT_CONFIG = {
     "openai_api_key": "", 
     "openai_base_url": "https://api.siliconflow.cn/v1",
     "openai_model_name": "Qwen/Qwen3-VL-30B-A3B-Thinking", 
+    "openai_vision_api_key": "", 
+    "openai_vision_base_url": "", 
+    "openai_vision_model_name": "", 
+    "openai_main_vision": True,  # 白名单式：主模型是否支持读图，由用户在设置里勾选，不靠模型名猜
     "bubble_bg": "rgba(255, 255, 255, 220)",
     "bubble_border": "#0cd6ff",
     "bubble_width": 250,
@@ -206,6 +210,17 @@ def load_config():
     # 向前兼容：旧版本的 distraction_keywords 是列表，转成字典
     if isinstance(loaded.get("distraction_keywords"), list):
         loaded["distraction_keywords"] = {k: True for k in loaded["distraction_keywords"]}
+
+    # 读图能力改为“白名单式”（用户勾选 openai_main_vision）。
+    # 旧配置没有该键时，按旧的“模型名黑名单”规则初始化一次勾选状态，
+    # 保证老用户升级后行为不突变；此后完全由用户勾选决定，不再看模型名。
+    if "openai_main_vision" not in loaded:
+        try:
+            from api.openai_compat import _is_text_only_model
+            loaded["openai_main_vision"] = not _is_text_only_model(
+                str(loaded.get("openai_model_name") or ""))
+        except Exception:
+            loaded["openai_main_vision"] = True
 
     _deep_fill_defaults(loaded, DEFAULT_CONFIG)
     # 只迁移旧版自带的灰色默认值；用户手动设置过的其它边框色保持不变。

@@ -29,10 +29,14 @@ class EditNoteDialog(QDialog):
         self.accept()
 
 class QuickNoteDialog(QDialog):
-    def __init__(self, parent_pet):
+    def __init__(self, parent_pet, folder="默认便签"):
         super().__init__(parent_pet)
         self.pet = parent_pet
-        self.setWindowTitle("📝 随手记 (便签)")
+        self.folder = folder
+        title = "📝 随手记 (便签)"
+        if folder != "默认便签":
+            title += f" → 存入分组【{folder}】"
+        self.setWindowTitle(title)
         self.setWindowFlags(Qt.WindowType.Tool)
         self.setWindowOpacity(0.92)
         self.resize(300, 160)
@@ -72,7 +76,7 @@ class QuickNoteDialog(QDialog):
             "time": datetime.now().strftime('%Y-%m-%d %H:%M'),
             "text": text,
             "status": "active",
-            "folder": "默认便签",
+            "folder": self.folder,
             "pinned": False,
             "locked": False
         })
@@ -112,7 +116,13 @@ class NotesManagerDialog(QDialog):
         lay.addLayout(folder_layout)
 
         folder_actions = QHBoxLayout()
-        
+
+        self.btn_new_note = QPushButton("➕ 新建便签")
+        self.btn_new_note.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_new_note.setToolTip(f"快速记一条新便签，自动归入当前分组【{self.current_folder}】")
+        self.btn_new_note.clicked.connect(self.new_note_in_folder)
+        folder_actions.addWidget(self.btn_new_note)
+
         btn_new_folder = QPushButton("➕新建分组")
         btn_new_folder.clicked.connect(self.new_folder)
         folder_actions.addWidget(btn_new_folder)
@@ -128,8 +138,40 @@ class NotesManagerDialog(QDialog):
         folder_actions.addStretch()
         lay.addLayout(folder_actions)
 
+        # ---- 检索栏 + 便签条数总览 ----
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 搜索便签内容...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self.refresh_list)
+        search_row.addWidget(self.search_input, stretch=1)
+
+        self.count_label = QLabel("")
+        self.count_label.setStyleSheet("color: #6c8193; font-weight: bold;")
+        self.count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        search_row.addWidget(self.count_label)
+        lay.addLayout(search_row)
+
         self.list_widget = ResponsiveListWidget()
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._show_item_menu)
         lay.addWidget(self.list_widget)
+
+        # ---- 分页（条目过多时防止一次性渲染全部导致卡顿）----
+        self.page_size = 20
+        self.current_page = 0
+        page_row = QHBoxLayout()
+        self.prev_btn = QPushButton("◀ 上一页")
+        self.prev_btn.clicked.connect(self._go_prev_page)
+        self.page_label = QLabel("第 1 / 1 页")
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setStyleSheet("color: #6c8193; font-weight: bold;")
+        self.next_btn = QPushButton("下一页 ▶")
+        self.next_btn.clicked.connect(self._go_next_page)
+        page_row.addWidget(self.prev_btn)
+        page_row.addWidget(self.page_label, stretch=1)
+        page_row.addWidget(self.next_btn)
+        lay.addLayout(page_row)
 
         btn_layout = QHBoxLayout()
         self.export_btn = QPushButton("💾 导出当前分组")
@@ -156,7 +198,13 @@ class NotesManagerDialog(QDialog):
 
     def on_folder_change(self):
         self.current_folder = self.folder_combo.currentText()
+        # 同步更新「新建便签」按钮的提示，表明新便签将归入哪个分组
+        self.btn_new_note.setToolTip(f"快速记一条新便签，自动归入当前分组【{self.current_folder}】")
         self.refresh_list()
+
+    def new_note_in_folder(self):
+        """打开随手记窗口，新便签保存时自动归入当前分组。"""
+        self.pet.open_dialog(QuickNoteDialog, self.current_folder)
 
     def new_folder(self):
         ask_text(self, "新建便签分组", "请输入分组名称:", self._add_folder)
@@ -232,7 +280,11 @@ class NotesManagerDialog(QDialog):
     def refresh_list(self):
         self.list_widget.clear()
         all_notes = self.pet.config.get("notes", [])
+        keyword = getattr(self, "search_input", None)
+        keyword = keyword.text().strip().lower() if keyword else ""
         filtered_notes = []
+        total_count = 0
+        folder_count = 0
         
         # 兼容旧版本数据并过滤
         for n in all_notes:
@@ -240,16 +292,48 @@ class NotesManagerDialog(QDialog):
             if "pinned" not in n: n["pinned"] = False
             if "locked" not in n: n["locked"] = False
             if "status" not in n: n["status"] = "active"
-            
-            # 如果选择的是“默认便签”，则显示所有便签；否则只显示对应文件夹的
-            if (self.current_folder == "默认便签" or n["folder"] == self.current_folder) and n["status"] != "hidden": 
+
+            # 已隐藏（归档）的便签不参与统计与展示
+            if n["status"] == "hidden":
+                continue
+            total_count += 1
+
+            # 当前分组内的条数（“默认便签”代表全部分组）
+            if self.current_folder == "默认便签" or n["folder"] == self.current_folder:
+                folder_count += 1
+
+            # 分组 + 检索双重过滤（检索不区分大小写，匹配便签正文）
+            if (self.current_folder == "默认便签" or n["folder"] == self.current_folder) \
+                    and (not keyword or keyword in str(n.get("text", "")).lower()):
                 filtered_notes.append(n)
-                
+
+        # 更新条数总览
+        shown_count = len(filtered_notes)
+        if hasattr(self, "count_label"):
+            self.count_label.setText(
+                f"📊 共 {total_count} 条便签 · 当前分组 {folder_count} 条"
+                + (f" · 检索到 {shown_count} 条" if keyword else ""))
+
         is_desc = (self.sort_combo.currentIndex() == 0)
         filtered_notes.sort(key=lambda x: x.get("time", ""), reverse=is_desc)
-        filtered_notes.sort(key=lambda x: x.get("pinned", False), reverse=True) 
+        filtered_notes.sort(key=lambda x: x.get("pinned", False), reverse=True)
 
-        for note in filtered_notes:
+        # 分页：只渲染当前页的便签，防止条目过多一次性渲染造成卡顿
+        total_pages = max(1, (len(filtered_notes) + self.page_size - 1) // self.page_size)
+        if self.current_page >= total_pages:
+            self.current_page = total_pages - 1
+        if self.current_page < 0:
+            self.current_page = 0
+        start = self.current_page * self.page_size
+        page_notes = filtered_notes[start:start + self.page_size]
+
+        # 记录与列表项一一对应的真实便签引用（QListWidgetItem.setData 会深拷贝
+        # Python 对象，右键菜单必须按行号回查此处，才能操作 config 中的原对象）。
+        # 注意：分页后列表里只有当前页的条目，因此这里只保存当前页的便签。
+        self._note_order = list(page_notes)
+        self._update_page_controls(total_pages)
+
+        for note in page_notes:
             item_widget = QWidget()
             item_layout = QVBoxLayout(item_widget)
             item_layout.setContentsMargins(6, 4, 6, 4)
@@ -260,6 +344,11 @@ class NotesManagerDialog(QDialog):
             lbl.setWordWrap(True)
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            # 关键：不让 QLabel 拦截右键（默认会弹 Copy/Select All 文本菜单），
+            # 改为把右键坐标转给 _show_item_menu 的五项功能菜单
+            lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            lbl.customContextMenuRequested.connect(
+                lambda pos, w=lbl: self._widget_context_menu(w, pos))
             item_layout.addWidget(lbl)
             
             locked = note["locked"]
@@ -285,7 +374,13 @@ class NotesManagerDialog(QDialog):
             btn_del = QPushButton("❌删除")
             btn_del.setEnabled(not locked)
             btn_del.clicked.connect(lambda checked=False, n=note: self.del_note(n))
-            
+
+            # 按钮也统一走自定义右键菜单（点击按钮空白处右键同样呼出五项菜单）
+            for _btn in (btn_edit, btn_pin, btn_lock, btn_move, btn_del):
+                _btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                _btn.customContextMenuRequested.connect(
+                    lambda pos, w=_btn: self._widget_context_menu(w, pos))
+
             for col, button in enumerate((btn_edit, btn_pin, btn_lock)):
                 button.setMinimumHeight(34)
                 button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -296,11 +391,85 @@ class NotesManagerDialog(QDialog):
                 button_grid.addWidget(button, 1, col)
             item_layout.addLayout(button_grid)
             item_widget.setMinimumHeight(max(118, item_widget.sizeHint().height()))
+            # item_widget 自身也转发右键（覆盖禁用按钮等不消费鼠标事件的区域）
+            item_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            item_widget.customContextMenuRequested.connect(
+                lambda pos, w=item_widget: self._widget_context_menu(w, pos))
             
             item = QListWidgetItem()
             item.setSizeHint(item_widget.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, item_widget)
+
+    def _go_prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.refresh_list()
+
+    def _go_next_page(self):
+        self.current_page += 1
+        self.refresh_list()
+
+    def _update_page_controls(self, total_pages):
+        """刷新分页控件状态（总页数、当前页、按钮可用性）。"""
+        self.prev_btn.setEnabled(self.current_page > 0)
+        self.next_btn.setEnabled(self.current_page < total_pages - 1)
+        self.page_label.setText(f"第 {self.current_page + 1} / {total_pages} 页")
+
+    def _widget_context_menu(self, widget, pos):
+        """item 内子控件（QLabel/按钮）的右键坐标换算成列表视口坐标后呼出菜单。
+
+        列表项使用 setItemWidget 自定义 widget，其中的 QLabel 默认会拦截右键
+        弹出系统文本菜单（Copy/Select All）。这里把 CustomContextMenu 信号
+        的坐标统一换算到 viewport，复用 _show_item_menu 的五项功能菜单。
+        """
+        global_pos = widget.mapToGlobal(pos)
+        viewport_pos = self.list_widget.viewport().mapFromGlobal(global_pos)
+        self._show_item_menu(viewport_pos)
+
+    def _show_item_menu(self, pos):
+        """右键点击便签列表项时，呼出 编辑/置顶/锁定/移动/删除 菜单。"""
+        item = self.list_widget.itemAt(pos)
+        if item is None:
+            return
+        row = self.list_widget.row(item)
+        note_order = getattr(self, "_note_order", [])
+        if row < 0 or row >= len(note_order):
+            return
+        note = note_order[row]
+        if note is None:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet(MENU_QSS)
+        locked = note.get("locked", False)
+
+        act_edit = QAction("✏️ 编辑", menu)
+        act_edit.setEnabled(not locked)
+        act_edit.triggered.connect(lambda checked=False, n=note: self.open_editor(n))
+
+        act_pin = QAction("❌ 取消置顶" if note.get("pinned", False) else "📌 置顶", menu)
+        act_pin.triggered.connect(lambda checked=False, n=note: self.toggle_pin(n))
+
+        act_lock = QAction("🔓 解锁" if locked else "🔒 锁定", menu)
+        act_lock.triggered.connect(lambda checked=False, n=note: self.toggle_lock(n))
+
+        act_move = QAction("📂 移动", menu)
+        act_move.setEnabled(not locked)
+        act_move.triggered.connect(lambda checked=False, n=note: self.move_note(n))
+
+        act_del = QAction("❌ 删除", menu)
+        act_del.setEnabled(not locked)
+        act_del.triggered.connect(lambda checked=False, n=note: self.del_note(n))
+
+        menu.addAction(act_edit)
+        menu.addAction(act_pin)
+        menu.addAction(act_lock)
+        menu.addSeparator()
+        menu.addAction(act_move)
+        menu.addAction(act_del)
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+        menu.deleteLater()
 
     def open_editor(self, note):
         dlg = EditNoteDialog(self, note)

@@ -76,6 +76,28 @@ def openai_chat(config, messages, temperature=0.7, image_b64=None,
     model_name = config.get("openai_model_name", "").strip()
     base_url = _join_url(config.get("openai_base_url", "").strip())
 
+    # 读图能力为“白名单式”：主模型能否读图由用户勾选 openai_main_vision 决定，不靠模型名猜。
+    # - 主模型可读图（默认）→ 贴图直接用主模型；
+    # - 主模型不可读图 + 已填读图模型 → 临时切换到读图模型识图
+    #   （读图模型的 api key / 接口地址留空则沿用上方主模型的）；
+    # - 主模型不可读图 + 未填读图模型 → 仍走主模型，图片降级为文字提示。
+    # 纯文字对话永远走主模型，与读图设置无关。
+    vision_model = (config.get("openai_vision_model_name") or "").strip()
+    main_can_vision = bool(config.get("openai_main_vision", True))
+
+    using_vision_model = False
+    if image_b64 and vision_model and not main_can_vision:
+        using_vision_model = True
+        model_name = vision_model
+        vision_key = (config.get("openai_vision_api_key") or "").strip()
+        vision_url = (config.get("openai_vision_base_url") or "").strip()
+        if vision_key:
+            api_key = vision_key
+        if vision_url:
+            base_url = _join_url(vision_url)
+
+    can_handle_image = main_can_vision or using_vision_model
+
     # 如果带了图片，将最后一条 user 消息改造为多模态格式
     if image_b64 and messages:
         for i in range(len(messages) - 1, -1, -1):
@@ -84,15 +106,15 @@ def openai_chat(config, messages, temperature=0.7, image_b64=None,
                 if isinstance(text_part, list):
                     break  # 已经是多模态格式，不重复处理
 
-                if _is_text_only_model(model_name):
-                    # 纯文本模型不支持图片，跳过图片，在文本末尾追加简短提示
+                if not can_handle_image:
+                    # 主模型不可读图且未配读图模型：跳过图片，在文本末尾追加简短提示
                     messages[i]["content"] = (
                         f"{text_part or ''}\n"
                         f"[用户贴了一张图，但 {model_name} 不支持图片输入，"
                         f"请据文字上下文回复。]"
                     ).strip()
                 else:
-                    # 多模态模型：正常传递 base64 图片
+                    # 可读图：正常传递 base64 图片
                     messages[i]["content"] = [
                         {"type": "text", "text": text_part or "请描述这张图片。"},
                         {

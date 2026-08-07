@@ -22,7 +22,7 @@ from core.utils import *
 from core.calendar_service import CalendarService
 from api import gemini_rest_generate, openai_chat
 from threads import ChatThread, TriviaThread, IdleChatThread, RandomEventThread, DataRetrievalThread, ItemRetrievalThread, ImageFetchThread
-from ui import MENU_QSS, ImageBubble, ResponsiveListWidget, DraggableListWidget, ChatInputBox, FocusOverlay, InputDialog, ChatBubbleWindow, install_ice_glass_theme
+from ui import MENU_QSS, ImageBubble, ResponsiveListWidget, DraggableListWidget, ChatInputBox, FocusOverlay, InputDialog, ChatBubbleWindow, DailySigninWindow, install_ice_glass_theme
 from dialogs import (UserProfileDialog, MoodDialog, ScheduleAlertDialog, CheckinAlertDialog, EditScheduleDialog, EditCheckinDialog, ScheduleDialog, DayDetailDialog, MiniCalendarDialog, CheckinDialog, StatsDialog, CollectionManagerDialog, EditNoteDialog, QuickNoteDialog, NotesManagerDialog, DistractionSettingsDialog, AutoEventSettingsDialog, RandomEventDialog, StoreDialog, ApiSettingsDialog, AppearanceDialog, FocusDialog, MemorySettingsDialog, HistoryDialog, EbookShelfDialog)
 from dialogs.common import show_warning
 
@@ -77,6 +77,28 @@ def sanitize_bubble_text(text):
         r"^\s*(?:normal|shy|angry|dark)\s*[:：\-—]\s*",
         "", value, flags=re.IGNORECASE)
     return value.strip()
+
+
+class ClickableSubmenuMenu(QMenu):
+    """右键菜单：点击带子菜单的顶层项时触发它自身的动作，而不是只展开子菜单。
+
+    Qt 默认行为：QAction 一旦 setMenu() 设置了子菜单，点击它只会展开子菜单，
+    triggered 信号不会发射（表现为“点不动、呼不出窗口”）。本类重写
+    mousePressEvent：点中的若是带子菜单的项，则收起菜单并触发该动作；
+    鼠标悬停展开子菜单的原生行为（含右侧 “>” 指示）保持不变。
+    """
+
+    def mousePressEvent(self, event):
+        action = self.actionAt(event.pos())
+        if action is not None and action.menu() is not None and action.isEnabled():
+            sub = action.menu()
+            if sub.isVisible():
+                sub.hide()
+            self.hide()
+            action.trigger()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class DesktopPet(QWidget):
@@ -135,6 +157,7 @@ class DesktopPet(QWidget):
         self._anchor_pending = False
         self._anchor_applying = False
         self._bubble_sync_pending = False
+        self._daily_signin_window = None  # 每日上线碎片领取窗（非常驻，手动领取）
 
         # 启动时清理上次残留的电子书副本与不再被引用的历史目录
         from dialogs.ebook import _cleanup_pending_ebook_deletions
@@ -424,12 +447,22 @@ class DesktopPet(QWidget):
         if getattr(self, "chat_bubble", None) and self.chat_bubble.isVisible():
             self._bubble_was_visible = True
             self.chat_bubble.hide()
+        # 碎片领取窗同理：本体隐藏时同步收起，恢复显示时再带回来。
+        claim_win = getattr(self, "_daily_signin_window", None)
+        if claim_win is not None and claim_win.isVisible():
+            self._claim_was_visible = True
+            claim_win.hide()
 
     def showEvent(self, event):
         super().showEvent(event)
         if getattr(self, "_bubble_was_visible", False):
             self._bubble_was_visible = False
             self.chat_bubble.show()
+        if getattr(self, "_claim_was_visible", False):
+            self._claim_was_visible = False
+            claim_win = getattr(self, "_daily_signin_window", None)
+            if claim_win is not None:
+                claim_win.show()
 
     def _sync_bubble_position(self):
         """把气泡窗口贴到本体图像正上方（底边中点对齐本体顶边中点）。"""
@@ -489,12 +522,44 @@ class DesktopPet(QWidget):
         self._anchor_applying = False
 
     def check_daily_signin(self):
+        """每日上线：今天没领过碎片就自动弹出领取窗（稍等主窗口就位）。"""
+        QTimer.singleShot(600, self.show_daily_signin_window)
+
+    def show_daily_signin_window(self):
+        """弹出每日数据碎片领取窗；今日已领则静默返回（启动/跨0点共用，幂等）。"""
         today = str(date.today())
-        if self.config.get("last_sign_in") != today:
-            self.config["coins"] += 50
-            self.config["last_sign_in"] = today
-            save_config(self.config)
-            QTimer.singleShot(2000, lambda: self.inject_system_event("系统：用户每日签到", "【normal】启动验证完成。今天按时上线了，奖励 50 数据碎片。好好干活。"))
+        if self.config.get("last_sign_in") == today:
+            return
+        win = getattr(self, "_daily_signin_window", None)
+        if win is None:
+            win = DailySigninWindow(self)
+            self._daily_signin_window = win
+        win.refresh_text()
+        win.show()
+        win.raise_()
+
+    def claim_daily_signin(self):
+        """点击领取：再次核对今日是否已领（防重复入账），入账后弹气泡。"""
+        today = str(date.today())
+        if self.config.get("last_sign_in") == today:
+            self.close_daily_signin_window()
+            return
+        self.config["coins"] = self.config.get("coins", 0) + 50
+        self.config["last_sign_in"] = today
+        save_config(self.config)
+        self.close_daily_signin_window()
+        self._on_calendar_coins_changed(self.config["coins"])
+        self.inject_system_event(
+            "系统：用户每日签到",
+            "【normal】启动验证完成。今天按时上线了，奖励 50 数据碎片。好好干活。")
+
+    def close_daily_signin_window(self):
+        win = getattr(self, "_daily_signin_window", None)
+        if win is not None:
+            try:
+                win.hide()
+            except RuntimeError:
+                self._daily_signin_window = None
 
     def init_input_counter(self):
         # 尝试用 pynput 做全局计数(统计整台电脑的点击/敲击，像 bongo cat)。
@@ -722,6 +787,8 @@ class DesktopPet(QWidget):
                 self.calendar_service.daily_rollover()
                 self._checkin_notified = set()
             self._last_seen_date = today
+            # 0 点仍在运转：复用此处时间检测，弹出新一天的碎片领取窗
+            self.show_daily_signin_window()
 
         now_str = now.strftime("%H:%M")
         # 首先检查全局提醒总开关是否开启
@@ -1484,14 +1551,23 @@ class DesktopPet(QWidget):
 
     def _build_context_menu(self):
         """构建右键菜单（只执行一次，QActions 的 parent 均设为 menu 自身避免泄漏）。"""
-        menu = QMenu(self)
+        menu = ClickableSubmenuMenu(self)
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         # ---- 静态项 ----
         menu.addAction("🔌 登录为 Conveyor",
                        lambda: self.open_dialog(UserProfileDialog))
-        menu.addAction("📝 随手记 (便签/灵感)",
-                       lambda: self.open_dialog(QuickNoteDialog))
+
+        # 顶层项【随手记】保持可点击直接呼出；右侧 ">" 悬停弹出【便签管理与归档】
+        quick_note_action = QAction("📝 随手记 (便签/灵感)（直接点）", menu)
+        quick_note_action.triggered.connect(
+            lambda: self.open_dialog(QuickNoteDialog))
+        manager_menu = QMenu("🗂️ 便签管理", menu)
+        manager_menu.addAction("🗂️ 便签管理与归档",
+                               lambda: self.open_dialog(NotesManagerDialog))
+        quick_note_action.setMenu(manager_menu)
+        menu.addAction(quick_note_action)
+
         menu.addAction("💖 查询好感度/当前心情",
                        lambda: self.open_dialog(MoodDialog))
         menu.addAction("⏱️ 强制专注协议 (计时/防摸鱼监控)",

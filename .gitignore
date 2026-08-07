@@ -10,3 +10,7 @@ notes.txt
 ebook_library/
 giegisa.log
 _smoke_*.png
+
+# PyInstaller 打包产物（不应入库）
+build/
+dist/

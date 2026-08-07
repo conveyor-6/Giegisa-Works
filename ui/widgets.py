@@ -1,9 +1,10 @@
 import os
 import re
 import base64
+from datetime import date
 from PyQt6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QDialog, QListWidget, QPushButton, QTextEdit, QSizePolicy)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QSize, QByteArray, QBuffer, QIODevice
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QSize, QRect, QByteArray, QBuffer, QIODevice, QEvent
+from PyQt6.QtGui import QPixmap, QImage, QColor, QPainter, QTextCursor
 
 class ImageBubble(QWidget):
     def __init__(self, parent_pet):
@@ -134,23 +135,75 @@ class ChatInputBox(QTextEdit):
     image_pasted = pyqtSignal()   # 粘贴了图片时通知主界面更新提示
     historyUp = pyqtSignal()      # 光标在首行时按 ↑：翻阅更早的输入历史
     historyDown = pyqtSignal()    # 光标在末行时按 ↓：翻阅更近的输入历史
-    
+
+    # 占位文字（颜色固定，不随深色系统变化）。想改占位文字颜色，改 placeholder_color 即可。
+    placeholder_text = "与Giegisa对话... (Ctrl+v贴图，Shift+回车换行，回车发送，↑↓显示输入记录)"
+    placeholder_color = "#5EA7D8"
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setPlaceholderText("与Giegisa对话... (Ctrl+v贴图，Shift+回车换行，回车发送)")
-        self.setStyleSheet("background-color: rgba(255, 255, 255, 180); border: 1px solid gray; border-radius: 5px; font-family: 'Microsoft YaHei'; font-size: 13px; padding: 4px;")
-        self.setFixedHeight(32)
+        # 注意：不能调用 setPlaceholderText——原生占位文字颜色在“深色系统 +
+        # QSS”下会被系统 palette 覆盖且无法自定义（setPalette 被 QStyleSheetStyle
+        # 重置、QSS color 被强制 50% 淡化），故改为 paintEvent 自绘占位文字。
+        # color 固定为深色：若 QSS 不写 color，深色系统下文字会跟随系统
+        # palette 变成浅色，与白色半透明背景对比度不足。
+        self.setStyleSheet("background-color: rgba(255, 255, 255, 180); color: #333333; border: 1px solid gray; border-radius: 5px; font-family: 'Microsoft YaHei'; font-size: 13px; padding: 4px;")
+        self.setFixedHeight(40)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.textChanged.connect(self.adjust_height)
         # 待发送的图片（base64 文本 + 类型），发送后会清空
         self.pending_image_b64 = None
         self.pending_image_mime = "image/png"
 
+    def placeholderText(self):
+        """兼容原 QTextEdit API：返回占位文字（实际由 paintEvent 自绘）。"""
+        return self.placeholder_text
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # 没有可见文字时自绘占位文字（允许只有空白/换行——按 Shift+回车
+        # 换行后输入框变高，换行的占位文字后文随之可见）。颜色完全可控、
+        # 不受深色系统 palette 影响。定位以第一行文本位置为基准（不随
+        # 光标移动）：默认单行时基线定位让文字中心与光标中心重合、超宽
+        # 部分由视口裁剪（只显示一行）；输入框变高（≥两行空间）且文字
+        # 超宽时自动换行、顶部对齐，完整显示后文。
+        if self.placeholder_text and not self.toPlainText().strip():
+            painter = QPainter(self.viewport())
+            painter.setPen(QColor(self.placeholder_color))
+            painter.setFont(self.document().defaultFont())
+            fm = painter.fontMetrics()
+            cursor = self.textCursor()
+            cursor.setPosition(0)          # 第一行行首，占位文字固定从顶部排起
+            first = self.cursorRect(cursor)
+            left = first.x() + first.width() + 2
+            avail_w = self.viewport().width() - left - 2
+            need_wrap = ("\n" in self.placeholder_text
+                         or fm.horizontalAdvance(self.placeholder_text) > avail_w)
+            if need_wrap and self.viewport().height() > 2 * fm.lineSpacing():
+                # 输入框已变高（≥两行空间）：自动换行，从顶部对齐完整显示
+                rect = QRect(left, first.y(), max(20, avail_w),
+                             max(20, self.viewport().height() - first.y()))
+                painter.drawText(rect, Qt.AlignmentFlag.AlignLeft
+                                 | Qt.AlignmentFlag.AlignTop
+                                 | Qt.TextFlag.TextWordWrap, self.placeholder_text)
+            else:
+                # 单行：基线定位（文字中心与光标中心重合），超宽部分
+                # 由视口裁剪——默认高度下只显示一行。
+                baseline = first.y() + (first.height() - fm.height()) // 2 + fm.ascent()
+                painter.drawText(left, baseline, self.placeholder_text)
+            painter.end()
+
     def adjust_height(self):
         doc_height = int(self.document().size().height())
-        new_height = max(32, min(doc_height + 12, 120))
+        # 输入框随内容一直往下拉长：不再设 120px 小上限，只有拉长到接近
+        # 屏幕可用高度时才转滚动条，防止窗口整体撑出屏幕。
+        max_height = 600
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            max_height = max(400, screen.availableGeometry().height() - 250)
+        new_height = max(40, min(doc_height + 12, max_height))
         self.setFixedHeight(new_height)
-        if new_height == 120:
+        if new_height >= max_height:
             self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         else:
             self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -357,3 +410,160 @@ class ChatBubbleWindow(QWidget):
         # 文字增长后让桌宠重新定位（保持底边贴在图像顶，向上扩展）。
         # 推迟到同一轮事件循环执行，与缩放同一帧生效。
         self.pet._schedule_bubble_sync()
+
+
+class DailySigninWindow(QWidget):
+    """每日上线“数据碎片”领取窗（非常驻按钮窗）。
+
+    每天首次上线或跨 0 点仍在运行时由桌宠自动弹出；点击“领取”按钮
+    才入账，也可点 ✖ 直接关闭（本日不再弹出）。领取动作放在
+    DesktopPet.claim_daily_signin，点击时会再次核对今日是否已领，防重复。
+    """
+
+    def __init__(self, pet):
+        super().__init__(pet)
+        self.pet = pet
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.Tool
+                            | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        # 右上角 ✖：非常驻，不想要时可以随手关掉（本日不再弹出）
+        top = QHBoxLayout()
+        top.addStretch()
+        self.close_btn = QPushButton("✖")
+        self.close_btn.setFixedSize(20, 20)
+        self.close_btn.setStyleSheet(
+            "QPushButton { background-color: rgba(255, 76, 76, 200); color: white;"
+            " border: none; border-radius: 10px; font-size: 12px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #ff4c4c; }")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.hide)
+        top.addWidget(self.close_btn)
+        lay.addLayout(top)
+
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setTextFormat(Qt.TextFormat.RichText)
+        self.label.setStyleSheet(
+            "background-color: rgba(24, 28, 46, 235); color: #EAF6FF;"
+            "border: 2px solid #4FC3F7; border-radius: 10px;"
+            "padding: 12px 16px; font-family: 'Microsoft YaHei UI', 'Microsoft YaHei';"
+            "font-size: 13px;")
+        lay.addWidget(self.label)
+
+        self.claim_btn = QPushButton("点击领取")
+        self.claim_btn.setStyleSheet(
+            "QPushButton { background-color: #2D9BEA; color: white;"
+            " border: none; border-radius: 10px; padding: 9px;"
+            " font-family: 'Microsoft YaHei UI', 'Microsoft YaHei';"
+            " font-size: 14px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #4FC3F7; }"
+            "QPushButton:pressed { background-color: #1E88E5; }"
+            "QPushButton:disabled { background-color: rgba(96, 128, 150, 120);"
+            " color: #CFE6F5; }")
+        self.claim_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.claim_btn.clicked.connect(self._on_claim_clicked)
+        lay.addWidget(self.claim_btn)
+
+        self.is_following = False
+        self.mouse_drag_pos = QPoint()
+        # 文字区域鼠标穿透：按住提示框文字也能拖动窗口（样式照常显示）
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # 按钮区域同样支持拖动（点击功能不受影响），用事件过滤器统一处理
+        self._btn_drag_started = False
+        self.installEventFilter(self)
+
+    def refresh_text(self):
+        """按今日是否已领刷新文案（启动与跨 0 点可能各触发一次，幂等）。"""
+        claimed = self.pet.config.get("last_sign_in") == str(date.today())
+        if claimed:
+            self.label.setText(
+                "✅ <b>今日数据碎片已领取</b>")
+            self.claim_btn.setText("已领取")
+            self.claim_btn.setEnabled(False)
+        else:
+            self.label.setText(
+                "📰 <b>每日上线奖励</b><br>"
+                " <font color='#7FD6FF'><b>50</b> 数据碎片</font>")
+            self.claim_btn.setText("点击领取")
+            self.claim_btn.setEnabled(True)
+        self.adjustSize()
+
+    def _on_claim_clicked(self):
+        # 领取逻辑在桌宠侧，点击时会再核对一次“今日是否已领”。
+        self.pet.claim_daily_signin()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_text()
+        self._place_near_pet()
+
+    def _place_near_pet(self):
+        """贴在桌宠本体左侧（气泡在上方，避免重叠）；左边放不下则贴右侧。"""
+        pet = self.pet
+        self.adjustSize()
+        w, h = self.width(), self.height()
+        sg = (QApplication.screenAt(pet.geometry().center())
+              or QApplication.primaryScreen()).availableGeometry()
+        x = pet.x() - w - 10
+        if x < sg.left():
+            x = pet.x() + pet.width() + 10
+        x = max(sg.left(), min(x, sg.right() - w + 1))
+        y = max(sg.top(), pet.y())
+        y = min(y, sg.bottom() - h + 1)
+        self.move(x, y)
+
+    # ---- 可拖动（与 FocusOverlay/ImageBubble 一致） ----
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_following = True
+            self.mouse_drag_pos = event.globalPosition().toPoint() - self.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.is_following and (event.buttons() & Qt.MouseButton.LeftButton):
+            self.move(event.globalPosition().toPoint() - self.mouse_drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_following = False
+        super().mouseReleaseEvent(event)
+
+    # ---- 按钮区域也可拖动（按住移动即拖动窗口，原地松开仍是点击） ----
+    def eventFilter(self, obj, event):
+        if isinstance(obj, QPushButton):
+            t = event.type()
+            if (t == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._btn_drag_started = False
+                self.is_following = True
+                self.mouse_drag_pos = (event.globalPosition().toPoint()
+                                       - self.pos())
+                return False  # 让按钮正常收到按下，准备点击
+            if t == QEvent.Type.MouseMove:
+                if self.is_following and (event.buttons()
+                                          & Qt.MouseButton.LeftButton):
+                    delta = (event.globalPosition().toPoint() - self.pos()
+                             - self.mouse_drag_pos)
+                    if delta.manhattanLength() > 3:
+                        self._btn_drag_started = True
+                        obj.setDown(False)  # 取消按钮的按下高亮
+                    if self._btn_drag_started:
+                        self.move(event.globalPosition().toPoint()
+                                  - self.mouse_drag_pos)
+                        return True  # 吞掉移动，避免按钮误响应
+            if (t == QEvent.Type.MouseButtonRelease
+                    and event.button() == Qt.MouseButton.LeftButton):
+                was_drag = self._btn_drag_started
+                self.is_following = False
+                self._btn_drag_started = False
+                if was_drag:
+                    obj.setDown(False)
+                    return True  # 拖动结束：吞掉松开，防止误触发点击
+        return super().eventFilter(obj, event)

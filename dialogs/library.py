@@ -30,6 +30,22 @@ class CollectionManagerDialog(QDialog):
         self.list_widget.setSpacing(5)
         self.layout.addWidget(self.list_widget)
         
+        # --- 分页（条目过多时防止一次性渲染全部导致卡顿）---
+        self.page_size = 20
+        self.current_page = 0
+        page_row = QHBoxLayout()
+        self.prev_btn = QPushButton("◀ 上一页")
+        self.prev_btn.clicked.connect(self._go_prev_page)
+        self.page_label = QLabel("第 1 / 1 页")
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setStyleSheet("color: #6c8193; font-weight: bold;")
+        self.next_btn = QPushButton("下一页 ▶")
+        self.next_btn.clicked.connect(self._go_next_page)
+        page_row.addWidget(self.prev_btn)
+        page_row.addWidget(self.page_label, stretch=1)
+        page_row.addWidget(self.next_btn)
+        self.layout.addLayout(page_row)
+        
         btn_layout = QHBoxLayout()
         btn_export = QPushButton("💾 导出记录")
         btn_export.clicked.connect(self.export_data)
@@ -61,10 +77,20 @@ class CollectionManagerDialog(QDialog):
         if self.sort_combo.currentIndex() == 0:
             filtered_items.reverse() # 倒序
             
+        # 分页：只渲染当前页的条目，防止条目过多一次性渲染造成卡顿
+        total_pages = max(1, (len(filtered_items) + self.page_size - 1) // self.page_size)
+        if self.current_page >= total_pages:
+            self.current_page = total_pages - 1
+        if self.current_page < 0:
+            self.current_page = 0
+        start = self.current_page * self.page_size
+        page_items = filtered_items[start:start + self.page_size]
+        self._update_page_controls(total_pages)
+            
         if not filtered_items:
             self.list_widget.addItem("📭 暂无符合条件的记录！")
         else:
-            for i, t in enumerate(filtered_items):
+            for i, t in enumerate(page_items):
                 item_widget = QWidget()
                 h_layout = QHBoxLayout(item_widget)
                 h_layout.setContentsMargins(5,2,5,2)
@@ -101,6 +127,21 @@ class CollectionManagerDialog(QDialog):
                 item.setSizeHint(item_widget.sizeHint())
                 self.list_widget.addItem(item)
                 self.list_widget.setItemWidget(item, item_widget)
+
+    def _go_prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.refresh_list()
+
+    def _go_next_page(self):
+        self.current_page += 1
+        self.refresh_list()
+
+    def _update_page_controls(self, total_pages):
+        """刷新分页控件状态（总页数、当前页、按钮可用性）。"""
+        self.prev_btn.setEnabled(self.current_page > 0)
+        self.next_btn.setEnabled(self.current_page < total_pages - 1)
+        self.page_label.setText(f"第 {self.current_page + 1} / {total_pages} 页")
 
     def toggle_lock(self, item):
         item["locked"] = not item.get("locked", False)
@@ -384,6 +425,22 @@ class HistoryDialog(QDialog):
         self.list_widget = ResponsiveListWidget()
         self.layout.addWidget(self.list_widget)
         
+        # --- 分页（条目过多时防止一次性渲染全部导致卡顿）---
+        self.page_size = 20
+        self.current_page = 0
+        page_row = QHBoxLayout()
+        self.prev_btn = QPushButton("◀ 上一页")
+        self.prev_btn.clicked.connect(self._go_prev_page)
+        self.page_label = QLabel("第 1 / 1 页")
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setStyleSheet("color: #6c8193; font-weight: bold;")
+        self.next_btn = QPushButton("下一页 ▶")
+        self.next_btn.clicked.connect(self._go_next_page)
+        page_row.addWidget(self.prev_btn)
+        page_row.addWidget(self.page_label, stretch=1)
+        page_row.addWidget(self.next_btn)
+        self.layout.addLayout(page_row)
+        
         btn_layout = QHBoxLayout()
         self.export_btn = QPushButton("💾 导出当前分类")
         self.export_btn.clicked.connect(self.export_history)
@@ -507,6 +564,8 @@ class HistoryDialog(QDialog):
         if self.sort_combo.currentIndex() == 0:
             paired_data.reverse()
             
+        # 第一遍：先过滤，收集符合条件的数据（渲染阶段只处理当前页）
+        page_candidates = []  # (original_idx, user_data, ai_data)
         for original_idx, user_data, ai_data in paired_data:
             user_msg = user_data.get("content", "")
             ai_msg = ai_data.get("content", "")
@@ -531,6 +590,25 @@ class HistoryDialog(QDialog):
             # --- 关键词检索过滤 ---
             if keyword and keyword not in user_msg.lower() and keyword not in ai_msg.lower():
                 continue
+            
+            page_candidates.append((original_idx, user_data, ai_data))
+            
+        # 分页：只渲染当前页的条目，防止条目过多一次性渲染造成卡顿
+        total_pages = max(1, (len(page_candidates) + self.page_size - 1) // self.page_size)
+        if self.current_page >= total_pages:
+            self.current_page = total_pages - 1
+        if self.current_page < 0:
+            self.current_page = 0
+        start = self.current_page * self.page_size
+        page_candidates = page_candidates[start:start + self.page_size]
+        self._update_page_controls(total_pages)
+        
+        for original_idx, user_data, ai_data in page_candidates:
+            user_msg = user_data.get("content", "")
+            ai_msg = ai_data.get("content", "")
+            locked = user_data.get("locked", False)
+            msg_ts = user_data.get("timestamp", 0)
+            is_system = user_msg.startswith("（系统：")
                 
             item_widget = QWidget()
             h_layout = QHBoxLayout(item_widget)
@@ -575,6 +653,21 @@ class HistoryDialog(QDialog):
             item.setSizeHint(item_widget.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, item_widget)
+
+    def _go_prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.refresh_list()
+
+    def _go_next_page(self):
+        self.current_page += 1
+        self.refresh_list()
+
+    def _update_page_controls(self, total_pages):
+        """刷新分页控件状态（总页数、当前页、按钮可用性）。"""
+        self.prev_btn.setEnabled(self.current_page > 0)
+        self.next_btn.setEnabled(self.current_page < total_pages - 1)
+        self.page_label.setText(f"第 {self.current_page + 1} / {total_pages} 页")
 
     def setup_quick_delete_menu(self):
         menu = QMenu(self)

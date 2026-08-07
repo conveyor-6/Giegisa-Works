@@ -1,7 +1,27 @@
 """Gemini API 调用 —— 通过 Google Gen AI SDK。"""
 
+import re
+
 import httpx
 from google import genai
+
+
+def _normalize_proxy_url(proxy):
+    """把用户填写的代理字符串规整成 httpx 可用的代理 URL。
+
+    - 空值/空白 → 返回 ""（不指定代理，由 httpx 自动走系统代理/环境变量，挂梯即可用）
+    - 缺协议前缀 → 自动补 http://
+    - https:// 前缀 → 改为 http://（本地代理基本都不提供 TLS，
+      填 https 前缀会导致 TLS 握手失败而连不上）
+    """
+    proxy = (proxy or "").strip()
+    if not proxy:
+        return ""
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", proxy):
+        proxy = "http://" + proxy
+    if proxy.lower().startswith("https://"):
+        proxy = "http://" + proxy[len("https://"):]
+    return proxy
 
 
 def gemini_rest_generate(config, prompt, system_instruction=None, history=None,
@@ -28,7 +48,7 @@ def gemini_rest_generate(config, prompt, system_instruction=None, history=None,
         raise ValueError("尚未填写 Gemini API Key。")
 
     model_name = (config.get("gemini_model_name") or "gemini-3.5-flash").strip()
-    proxy = (config.get("gemini_proxy") or "").strip()
+    proxy = _normalize_proxy_url(config.get("gemini_proxy"))
 
     # ---- 构建对话内容 ----
     contents = []
@@ -49,11 +69,13 @@ def gemini_rest_generate(config, prompt, system_instruction=None, history=None,
     contents.append({"role": "user", "parts": user_parts})
 
     # ---- 创建客户端（代理只影响 Gemini，不污染全局环境变量）----
-    http_options = {"timeout": timeout * 1000}
-    if proxy:
-        http_options["transport"] = httpx.HTTPTransport(proxy=proxy)
+    def _make_client(use_proxy):
+        http_options = {"timeout": timeout * 1000}
+        if use_proxy:
+            http_options["transport"] = httpx.HTTPTransport(proxy=proxy)
+        return genai.Client(api_key=api_key, http_options=http_options)
 
-    client = genai.Client(api_key=api_key, http_options=http_options)
+    client = _make_client(use_proxy=bool(proxy))
 
     # ---- 构建生成配置 ----
     generate_config = {}
@@ -63,11 +85,24 @@ def gemini_rest_generate(config, prompt, system_instruction=None, history=None,
         }
 
     # ---- 发起请求 ----
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=generate_config,
-    )
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=generate_config,
+        )
+    except httpx.TransportError:
+        # 手动填写的代理连不上（端口/格式不对、梯子未开等）时，
+        # 自动回退到“不填代理”的默认行为（系统代理/环境变量），
+        # 保证“填或不填都不影响挂梯使用”。
+        if not proxy:
+            raise
+        client = _make_client(use_proxy=False)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=generate_config,
+        )
 
     # ---- 解析响应 ----
     candidates = response.candidates

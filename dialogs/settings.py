@@ -360,7 +360,7 @@ class ApiSettingsDialog(QDialog):
         super().__init__(parent_pet)
         self.pet = parent_pet
         self.setWindowTitle("Giegisa - 核心数据与接口设置 (API/人设)")
-        self.resize(550, 500)
+        self.resize(550, 620)
         self.layout = QVBoxLayout(self)
         
         self.engine_combo = QComboBox()
@@ -381,7 +381,7 @@ class ApiSettingsDialog(QDialog):
         self.g_model_input.setPlaceholderText("例如: gemini-3.5-flash（识图请用支持视觉的模型）")
         g_layout.addRow("模型名称:", self.g_model_input)
         
-        self.g_proxy_input.setPlaceholderText("挂梯必填，例: http://127.0.0.1:7890 (改后四位)")
+        self.g_proxy_input.setPlaceholderText("可选；挂梯时可填 http://127.0.0.1:7890，留空自动走系统代理")
         g_layout.addRow("强制本地代理:", self.g_proxy_input)
         
         self.gemini_group.setLayout(g_layout)
@@ -395,12 +395,31 @@ class ApiSettingsDialog(QDialog):
         self.o_model_input = QLineEdit(self.pet.config.get("openai_model_name", ""))
         self.o_model_input.setPlaceholderText("识图请填支持视觉(VL)的模型名")
         
+        self.o_main_vision_check = QCheckBox("主模型支持读图（贴图时直接用主模型识图）")
+        self.o_main_vision_check.setChecked(self.pet.config.get("openai_main_vision", True))
+
         o_layout.addRow("API Key:", self.o_key_input)
         o_layout.addRow("接口地址:", self.o_url_input)
         o_layout.addRow("模型名称:", self.o_model_input)
-        
+        o_layout.addRow("读图能力:", self.o_main_vision_check)
+
         self.openai_group.setLayout(o_layout)
         self.layout.addWidget(self.openai_group)
+
+        self.vision_group = QGroupBox("读图模型设置（可选；留空则沿用上方设置）")
+        v_layout = QFormLayout()
+
+        self.o_vision_key_input = QLineEdit(self.pet.config.get("openai_vision_api_key", ""))
+        self.o_vision_url_input = QLineEdit(self.pet.config.get("openai_vision_base_url", ""))
+        self.o_vision_model_input = QLineEdit(self.pet.config.get("openai_vision_model_name", ""))
+        self.o_vision_model_input.setPlaceholderText("主模型不能读图时，自动改用此模型识图；例: Qwen/Qwen3-VL-30B-A3B-Thinking")
+
+        v_layout.addRow("API Key:", self.o_vision_key_input)
+        v_layout.addRow("接口地址:", self.o_vision_url_input)
+        v_layout.addRow("模型名称:", self.o_vision_model_input)
+
+        self.vision_group.setLayout(v_layout)
+        self.layout.addWidget(self.vision_group)
 
         self.layout.addWidget(QLabel("核心人设提示词 (System Prompt):"))
         self.prompt_edit = QTextEdit()
@@ -420,6 +439,7 @@ class ApiSettingsDialog(QDialog):
         is_gemini = (idx == 0)
         self.gemini_group.setVisible(is_gemini)
         self.openai_group.setVisible(not is_gemini)
+        self.vision_group.setVisible(not is_gemini)
 
     def save_all(self):
         # 1. 引擎类型
@@ -434,6 +454,13 @@ class ApiSettingsDialog(QDialog):
         self.pet.config["openai_api_key"] = self.o_key_input.text().strip()
         self.pet.config["openai_base_url"] = self.o_url_input.text().strip()
         self.pet.config["openai_model_name"] = self.o_model_input.text().strip()
+
+        # 3.5 读图模型相关（留空则沿用上方主模型配置）
+        self.pet.config["openai_vision_api_key"] = self.o_vision_key_input.text().strip()
+        self.pet.config["openai_vision_base_url"] = self.o_vision_url_input.text().strip()
+        self.pet.config["openai_vision_model_name"] = self.o_vision_model_input.text().strip()
+        # 3.6 主模型读图能力（白名单式，用户勾选，不靠模型名猜）
+        self.pet.config["openai_main_vision"] = self.o_main_vision_check.isChecked()
 
         # 4. 人设
         self.pet.config["system_prompt"] = self.prompt_edit.toPlainText()
